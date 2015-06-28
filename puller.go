@@ -217,7 +217,14 @@ func (s *Puller) send(message Message) {
 
 func (b *Puller) messages(channel string, lastID int64) ([]Message, error) {
 	key := b.keyForChannel(channel)
-	cmd := b.client.ZRange(key, 0, -1)
+
+	query := redis.ZRangeByScore{
+		Max: "+inf",
+		Min: fmt.Sprintf("%d", lastID+1),
+	}
+
+	cmd := b.client.ZRangeByScore(key, query)
+
 	if cmd.Err() != nil {
 		return nil, cmd.Err()
 	}

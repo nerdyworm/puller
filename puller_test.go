@@ -150,3 +150,26 @@ func TestRedisPullNotifiesMultiplePullSubscribers(t *testing.T) {
 		<-wait
 	}
 }
+
+func TestPullerReturnsTheBacklogFromTheCorrectID(t *testing.T) {
+	puller := New(options)
+	puller.clear("global")
+
+	messages := 5
+	for i := 0; i < messages; i++ {
+		assert.Nil(t, puller.Push("global", "message"))
+	}
+
+	for lastID := -1; lastID < messages; lastID++ {
+		backlog, err := puller.Pull(Channels{"global": int64(lastID)}, 0)
+		assert.Nil(t, err)
+
+		if lastID == -1 {
+			assert.Equal(t, messages, backlog.Size())
+		} else if lastID == 0 {
+			assert.Equal(t, 0, backlog.Size())
+		} else {
+			assert.Equal(t, messages-lastID, backlog.Size())
+		}
+	}
+}
