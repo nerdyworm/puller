@@ -100,6 +100,7 @@ func newPuller(r *redis.Client, max int64) *Puller {
 func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error) {
 	backlog := Backlog{
 		Channels: channels,
+		Messages: []Message{},
 	}
 
 	for channel, lastID := range channels {
