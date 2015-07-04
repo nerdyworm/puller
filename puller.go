@@ -121,20 +121,13 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	}
 
 	if backlog.Empty() {
-		end := make(chan bool, 1)
-		go func() {
-			time.Sleep(timeout)
-			end <- true
-		}()
-
 		client := newClient(channels)
 
 		b.addClient(client)
 		defer b.removeClient(client)
 
 		select {
-		case <-end:
-			break
+		case <-time.After(timeout):
 		case message := <-client.messages:
 			backlog.Messages = append(backlog.Messages, message)
 		}
@@ -168,9 +161,12 @@ func (b *Puller) removeClient(c *client) {
 }
 
 func (s *Puller) subscribe(channel string) {
-	s.pubsub.Subscribe(channel)
-
 	if _, ok := s.subscriptions[channel]; !ok {
+		s.subscriptions[channel] = 0
+	}
+
+	if s.subscriptions[channel] <= 0 {
+		s.pubsub.Subscribe(channel)
 		s.subscriptions[channel] = 1
 	} else {
 		s.subscriptions[channel]++
@@ -189,13 +185,11 @@ func (s *Puller) start() {
 	for {
 		msgi, err := s.pubsub.ReceiveTimeout(time.Second * 30)
 		if err != nil {
-			if isTimeout(err) {
-				continue
-
+			if !isTimeout(err) {
+				log.Println("ERROR", err)
 			}
 
-			log.Println(err)
-			return
+			continue
 		}
 
 		switch msg := msgi.(type) {
@@ -208,11 +202,13 @@ func (s *Puller) start() {
 }
 
 func (s *Puller) send(message Message) {
+	s.lock.RLock()
 	for client, _ := range s.clients {
 		if client.allowed(message) {
 			client.messages <- message
 		}
 	}
+	s.lock.RUnlock()
 }
 
 func (b *Puller) messages(channel string, lastID int64) ([]Message, error) {
@@ -256,13 +252,20 @@ func (b *Puller) Push(channel string, payload interface{}) error {
 	encoded := message.encode()
 
 	key := b.keyForChannel(channel)
-	b.client.ZAdd(key, redis.Z{float64(nextID), encoded})
-	b.client.Publish(channel, encoded)
+	cmd := b.client.ZAdd(key, redis.Z{float64(nextID), encoded})
+	if cmd.Err() != nil {
+		return cmd.Err()
+	}
+
+	cmd = b.client.Publish(channel, encoded)
+	if cmd.Err() != nil {
+		return cmd.Err()
+	}
 
 	if nextID > b.maxBacklog {
 		min := fmt.Sprintf("%d", 1)
 		max := fmt.Sprintf("%d", nextID-b.maxBacklog)
-		b.client.ZRemRangeByScore(key, min, max)
+		return b.client.ZRemRangeByScore(key, min, max).Err()
 	}
 
 	return nil

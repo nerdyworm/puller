@@ -18,12 +18,12 @@ func main() {
 	})
 
 	p := puller.New(puller.Options{
-		MaxBacklogSize: 10,
+		MaxBacklogSize: 100,
 		Redis:          client,
 	})
 
 	go func() {
-		ticker := time.NewTicker(time.Second * 1)
+		ticker := time.NewTicker(100 * time.Millisecond)
 		for _ = range ticker.C {
 			p.Push("global", "Hello world")
 		}
@@ -45,7 +45,8 @@ func main() {
 			return
 		}
 
-		json.NewEncoder(w).Encode(backlog)
+		err = json.NewEncoder(w).Encode(backlog)
+		log.Printf("backlog.size=%d global=%d\n", backlog.Size(), backlog.Channels["global"])
 	})
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
