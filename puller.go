@@ -127,14 +127,8 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	if backlog.Empty() {
 		client := newClient(channels)
 
-		select {
-		case b.add <- client:
-			defer func() {
-				b.remove <- client
-			}()
-		case <-time.After(timeout):
-			timeout = 0
-		}
+		b.add <- client
+		defer func() { b.remove <- client }()
 
 		select {
 		case <-time.After(timeout):
