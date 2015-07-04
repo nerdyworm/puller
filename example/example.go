@@ -23,7 +23,7 @@ func main() {
 	})
 
 	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(10 * time.Millisecond)
 		for _ = range ticker.C {
 			p.Push("global", "Hello world")
 		}
@@ -39,14 +39,14 @@ func main() {
 			channels[key] = int64(lastID)
 		}
 
-		backlog, err := p.Pull(channels, 10*time.Second)
+		backlog, err := p.Pull(channels, 2*time.Second)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 
 		err = json.NewEncoder(w).Encode(backlog)
-		log.Printf("backlog.size=%d global=%d\n", backlog.Size(), backlog.Channels["global"])
+		//log.Printf("backlog.size=%d global=%d\n", backlog.Size(), backlog.Channels["global"])
 	})
 
 	log.Fatal(http.ListenAndServe(":8080", nil))

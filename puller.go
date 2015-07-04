@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"gopkg.in/redis.v3"
@@ -76,7 +75,9 @@ func newClient(channels Channels) *client {
 
 type Puller struct {
 	clients       map[*client]bool
-	lock          sync.RWMutex
+	add           chan *client
+	remove        chan *client
+	receive       chan Message
 	client        *redis.Client
 	pubsub        *redis.PubSub
 	subscriptions map[string]int
@@ -86,13 +87,16 @@ type Puller struct {
 func newPuller(r *redis.Client, max int64) *Puller {
 	puller := &Puller{
 		client:        r,
+		add:           make(chan *client, 100),
+		remove:        make(chan *client),
+		receive:       make(chan Message),
 		clients:       map[*client]bool{},
-		lock:          sync.RWMutex{},
 		maxBacklog:    max,
 		pubsub:        r.PubSub(),
 		subscriptions: map[string]int{},
 	}
 
+	go puller.run()
 	go puller.start()
 	return puller
 }
@@ -123,13 +127,14 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	if backlog.Empty() {
 		client := newClient(channels)
 
+		b.add <- client
 		select {
 		case <-time.After(timeout):
-		case message := <-b.nextMessage(client):
+			log.Println("timeout", timeout)
+		case message := <-client.messages:
 			backlog.Messages = append(backlog.Messages, message)
 		}
-
-		b.removeClient(client)
+		b.remove <- client
 	}
 
 	for channel := range channels {
@@ -137,20 +142,6 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	}
 
 	return backlog, nil
-}
-
-func (p *Puller) nextMessage(c *client) chan Message {
-	p.addClient(c)
-	return c.messages
-}
-
-func (b *Puller) addClient(c *client) {
-	b.lock.Lock()
-	b.clients[c] = true
-	for channel, _ := range c.channels {
-		b.subscribe(channel)
-	}
-	b.lock.Unlock()
 }
 
 func (s *Puller) subscribe(channel string) {
@@ -166,20 +157,37 @@ func (s *Puller) subscribe(channel string) {
 	}
 }
 
-func (b *Puller) removeClient(c *client) {
-	b.lock.Lock()
-	delete(b.clients, c)
-	for channel, _ := range c.channels {
-		b.unsubscribe(channel)
-	}
-	b.lock.Unlock()
-}
-
 func (s *Puller) unsubscribe(channel string) {
 	s.subscriptions[channel]--
 
 	if s.subscriptions[channel] == 0 {
-		s.pubsub.Unsubscribe(channel)
+		//s.pubsub.Unsubscribe(channel)
+		s.subscriptions[channel] = 1
+	}
+}
+
+func (p *Puller) run() {
+	for {
+		select {
+		case message := <-p.receive:
+			log.Printf("SENDING TO N=%d MESSAGE=%v", len(p.clients), message)
+			for client := range p.clients {
+				if client.allowed(message) {
+					client.messages <- message
+					close(client.messages)
+				}
+			}
+		case client := <-p.add:
+			p.clients[client] = true
+			for channel, _ := range client.channels {
+				p.subscribe(channel)
+			}
+		case client := <-p.remove:
+			delete(p.clients, client)
+			for channel, _ := range client.channels {
+				p.unsubscribe(channel)
+			}
+		}
 	}
 }
 
@@ -190,27 +198,18 @@ func (s *Puller) start() {
 			if !isTimeout(err) {
 				log.Println("ERROR", err)
 			}
-
 			continue
 		}
+
+		log.Println(msgi)
 
 		switch msg := msgi.(type) {
 		case *redis.Message:
 			message := Message{}
 			message.decode(msg.Payload)
-			s.send(message)
+			s.receive <- message
 		}
 	}
-}
-
-func (s *Puller) send(message Message) {
-	s.lock.RLock()
-	for client, _ := range s.clients {
-		if client.allowed(message) {
-			client.messages <- message
-		}
-	}
-	s.lock.RUnlock()
 }
 
 func (b *Puller) messages(channel string, lastID int64) ([]Message, error) {
