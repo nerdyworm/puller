@@ -123,14 +123,13 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	if backlog.Empty() {
 		client := newClient(channels)
 
-		b.addClient(client)
-		defer b.removeClient(client)
-
 		select {
 		case <-time.After(timeout):
-		case message := <-client.messages:
+		case message := <-b.nextMessage(client):
 			backlog.Messages = append(backlog.Messages, message)
 		}
+
+		b.removeClient(client)
 	}
 
 	for channel := range channels {
@@ -140,24 +139,18 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	return backlog, nil
 }
 
+func (p *Puller) nextMessage(c *client) chan Message {
+	p.addClient(c)
+	return c.messages
+}
+
 func (b *Puller) addClient(c *client) {
 	b.lock.Lock()
-	defer b.lock.Unlock()
-
 	b.clients[c] = true
 	for channel, _ := range c.channels {
 		b.subscribe(channel)
 	}
-}
-
-func (b *Puller) removeClient(c *client) {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-
-	delete(b.clients, c)
-	for channel, _ := range c.channels {
-		b.unsubscribe(channel)
-	}
+	b.lock.Unlock()
 }
 
 func (s *Puller) subscribe(channel string) {
@@ -171,6 +164,15 @@ func (s *Puller) subscribe(channel string) {
 	} else {
 		s.subscriptions[channel]++
 	}
+}
+
+func (b *Puller) removeClient(c *client) {
+	b.lock.Lock()
+	delete(b.clients, c)
+	for channel, _ := range c.channels {
+		b.unsubscribe(channel)
+	}
+	b.lock.Unlock()
 }
 
 func (s *Puller) unsubscribe(channel string) {
