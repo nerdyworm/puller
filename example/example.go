@@ -23,7 +23,7 @@ func main() {
 	})
 
 	go func() {
-		ticker := time.NewTicker(10 * time.Millisecond)
+		ticker := time.NewTicker(1000 * time.Millisecond)
 		for _ = range ticker.C {
 			p.Push("global", "Hello world")
 		}
@@ -31,6 +31,7 @@ func main() {
 
 	// /?channelName=0&channelName2=0
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("connected")
 		w.Header().Set("Content-Type", "application/json")
 
 		channels := puller.Channels{}
@@ -42,11 +43,16 @@ func main() {
 		backlog, err := p.Pull(channels, 2*time.Second)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
+			log.Println(err)
 			return
 		}
 
 		err = json.NewEncoder(w).Encode(backlog)
-		//log.Printf("backlog.size=%d global=%d\n", backlog.Size(), backlog.Channels["global"])
+		if err != nil {
+			log.Println(err)
+		}
+
+		log.Printf("backlog.size=%d global=%d\n", backlog.Size(), backlog.Channels["global"])
 	})
 
 	log.Fatal(http.ListenAndServe(":8080", nil))

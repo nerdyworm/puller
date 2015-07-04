@@ -87,7 +87,7 @@ type Puller struct {
 func newPuller(r *redis.Client, max int64) *Puller {
 	puller := &Puller{
 		client:        r,
-		add:           make(chan *client, 100),
+		add:           make(chan *client),
 		remove:        make(chan *client),
 		receive:       make(chan Message),
 		clients:       map[*client]bool{},
@@ -127,14 +127,20 @@ func (b *Puller) Pull(channels Channels, timeout time.Duration) (Backlog, error)
 	if backlog.Empty() {
 		client := newClient(channels)
 
-		b.add <- client
+		select {
+		case b.add <- client:
+			defer func() {
+				b.remove <- client
+			}()
+		case <-time.After(timeout):
+			timeout = 0
+		}
+
 		select {
 		case <-time.After(timeout):
-			log.Println("timeout", timeout)
 		case message := <-client.messages:
 			backlog.Messages = append(backlog.Messages, message)
 		}
-		b.remove <- client
 	}
 
 	for channel := range channels {
@@ -161,22 +167,13 @@ func (s *Puller) unsubscribe(channel string) {
 	s.subscriptions[channel]--
 
 	if s.subscriptions[channel] == 0 {
-		//s.pubsub.Unsubscribe(channel)
-		s.subscriptions[channel] = 1
+		s.pubsub.Unsubscribe(channel)
 	}
 }
 
 func (p *Puller) run() {
 	for {
 		select {
-		case message := <-p.receive:
-			log.Printf("SENDING TO N=%d MESSAGE=%v", len(p.clients), message)
-			for client := range p.clients {
-				if client.allowed(message) {
-					client.messages <- message
-					close(client.messages)
-				}
-			}
 		case client := <-p.add:
 			p.clients[client] = true
 			for channel, _ := range client.channels {
@@ -186,6 +183,14 @@ func (p *Puller) run() {
 			delete(p.clients, client)
 			for channel, _ := range client.channels {
 				p.unsubscribe(channel)
+			}
+		case message := <-p.receive:
+			for client := range p.clients {
+				if client.allowed(message) {
+					delete(p.clients, client)
+					client.messages <- message
+					close(client.messages)
+				}
 			}
 		}
 	}
@@ -200,8 +205,6 @@ func (s *Puller) start() {
 			}
 			continue
 		}
-
-		log.Println(msgi)
 
 		switch msg := msgi.(type) {
 		case *redis.Message:
